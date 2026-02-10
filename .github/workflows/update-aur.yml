@@ -1,0 +1,84 @@
+name: Update AUR Package
+
+on:
+  schedule:
+    # Check for new releases every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm git openssh pacman-contrib jq
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for new upstream release
+        id: check
+        run: |
+          CURRENT_VER=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
+          LATEST_VER=$(curl -s https://api.github.com/repos/tidewave-ai/tidewave_app/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+
+          echo "current=$CURRENT_VER" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST_VER" >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT_VER" = "$LATEST_VER" ]; then
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date: $CURRENT_VER"
+          else
+            echo "update=true" >> "$GITHUB_OUTPUT"
+            echo "New version available: $CURRENT_VER -> $LATEST_VER"
+          fi
+
+      - name: Update PKGBUILD
+        if: steps.check.outputs.update == 'true'
+        run: |
+          NEW_VER="${{ steps.check.outputs.latest }}"
+          sed -i "s/^pkgver=.*/pkgver=$NEW_VER/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+          # Update checksums (needs a non-root user for makepkg)
+          useradd -m builder
+          chown -R builder:builder .
+          su builder -c "updpkgsums"
+          su builder -c "makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Push to AUR
+        if: steps.check.outputs.update == 'true'
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          NEW_VER="${{ steps.check.outputs.latest }}"
+
+          # Configure SSH for AUR
+          mkdir -p /root/.ssh
+          echo "$AUR_SSH_KEY" > /root/.ssh/aur
+          chmod 600 /root/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> /root/.ssh/known_hosts 2>/dev/null
+          cat > /root/.ssh/config << EOF
+          Host aur.archlinux.org
+            IdentityFile /root/.ssh/aur
+            User aur
+          EOF
+
+          # Configure git
+          git config user.name "David Williams"
+          git config user.email "davewil1973@gmail.com"
+
+          # Commit changes
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update tidewave-bin to $NEW_VER"
+
+          # Push to GitHub
+          git push origin master
+
+          # Push to AUR
+          git remote add aur ssh://aur@aur.archlinux.org/tidewave-bin.git
+          git push aur master
