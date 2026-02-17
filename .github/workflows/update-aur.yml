@@ -6,6 +6,9 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch: # Allow manual trigger
 
+permissions:
+  contents: write
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -49,6 +52,9 @@ jobs:
           chown -R builder:builder .
           su builder -c "updpkgsums"
           su builder -c "makepkg --printsrcinfo > .SRCINFO"
+
+          # Restore ownership so subsequent steps can use git as root
+          chown -R root:root .
 
       - name: Push to AUR
         if: steps.check.outputs.update == 'true'
