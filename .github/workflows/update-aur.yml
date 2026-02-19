@@ -4,7 +4,13 @@ on:
   schedule:
     # Check for new releases every 6 hours
     - cron: '0 */6 * * *'
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync to AUR even if versions match'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -56,13 +62,21 @@ jobs:
           # Restore ownership so subsequent steps can use git as root
           chown -R root:root .
 
-      - name: Push to AUR
+      - name: Push to GitHub
         if: steps.check.outputs.update == 'true'
+        run: |
+          NEW_VER="${{ steps.check.outputs.latest }}"
+          git config user.name "David Williams"
+          git config user.email "davewil1973@gmail.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update tidewave-bin to $NEW_VER"
+          git push origin master
+
+      - name: Push to AUR
+        if: steps.check.outputs.update == 'true' || inputs.force_sync == true
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
-          NEW_VER="${{ steps.check.outputs.latest }}"
-
           # Configure SSH for AUR
           mkdir -p /root/.ssh
           echo "$AUR_SSH_KEY" > /root/.ssh/aur
@@ -74,17 +88,9 @@ jobs:
             User aur
           EOF
 
-          # Configure git
           git config user.name "David Williams"
           git config user.email "davewil1973@gmail.com"
 
-          # Commit changes
-          git add PKGBUILD .SRCINFO
-          git commit -m "Update tidewave-bin to $NEW_VER"
-
-          # Push to GitHub
-          git push origin master
-
-          # Push to AUR
+          # Push to AUR (force push since GitHub is source of truth)
           git remote add aur ssh://aur@aur.archlinux.org/tidewave-bin.git
-          git push aur master
+          git push --force aur master
