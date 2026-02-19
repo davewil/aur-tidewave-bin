@@ -66,6 +66,7 @@ jobs:
         if: steps.check.outputs.update == 'true'
         run: |
           NEW_VER="${{ steps.check.outputs.latest }}"
+          git config --global --add safe.directory "$PWD"
           git config user.name "David Williams"
           git config user.email "davewil1973@gmail.com"
           git add PKGBUILD .SRCINFO
@@ -88,6 +89,7 @@ jobs:
             User aur
           EOF
 
+          git config --global --add safe.directory "$PWD"
           git config user.name "David Williams"
           git config user.email "davewil1973@gmail.com"
 
