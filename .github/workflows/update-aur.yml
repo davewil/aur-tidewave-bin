@@ -31,9 +31,13 @@ jobs:
 
       - name: Check for new upstream release
         id: check
+        env:
+          # Authenticated requests avoid the 60/hour limit shared by runner IPs
+          GH_TOKEN: ${{ github.token }}
         run: |
           CURRENT_VER=$(grep '^pkgver=' PKGBUILD | cut -d= -f2)
-          LATEST_VER=$(curl -s https://api.github.com/repos/tidewave-ai/tidewave_app/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          # Fails on any API error rather than treating it as a new version ("null")
+          LATEST_VER=$(sh scripts/latest-version.sh tidewave-ai/tidewave_app)
 
           echo "current=$CURRENT_VER" >> "$GITHUB_OUTPUT"
           echo "latest=$LATEST_VER" >> "$GITHUB_OUTPUT"
