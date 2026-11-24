@@ -5,18 +5,19 @@ on:
     # Check for new releases every 6 hours
     - cron: '0 */6 * * *'
   workflow_dispatch:
-    inputs:
-      force_sync:
-        description: 'Force sync to AUR even if versions match'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: write
 
+# One run at a time: overlapping runs would race to commit and push the same version
+concurrency:
+  group: update-aur
+  cancel-in-progress: false
+
 jobs:
   update:
+    # A manual run from another branch must not publish that branch's PKGBUILD
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
@@ -28,6 +29,10 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # master's tip when the run starts, not the commit that triggered it, so a run
+          # queued behind another sees the version that run just pushed
+          ref: master
 
       - name: Check for new upstream release
         id: check
@@ -42,12 +47,14 @@ jobs:
           echo "current=$CURRENT_VER" >> "$GITHUB_OUTPUT"
           echo "latest=$LATEST_VER" >> "$GITHUB_OUTPUT"
 
-          if [ "$CURRENT_VER" = "$LATEST_VER" ]; then
-            echo "update=false" >> "$GITHUB_OUTPUT"
-            echo "Already up to date: $CURRENT_VER"
-          else
-            echo "update=true" >> "$GITHUB_OUTPUT"
+          # Only a newer upstream release counts, so an older "latest" can't downgrade the package
+          UPDATE=$(sh scripts/needs-update.sh "$CURRENT_VER" "$LATEST_VER")
+          echo "update=$UPDATE" >> "$GITHUB_OUTPUT"
+
+          if [ "$UPDATE" = true ]; then
             echo "New version available: $CURRENT_VER -> $LATEST_VER"
+          else
+            echo "Up to date: $CURRENT_VER (upstream latest: $LATEST_VER)"
           fi
 
       - name: Update PKGBUILD
@@ -77,16 +84,18 @@ jobs:
           git commit -m "Update tidewave-bin to $NEW_VER"
           git push origin master
 
+      # Runs on every successful run, not only on a version change, so a failed AUR
+      # push is retried next run instead of stranded behind the GitHub commit.
+      # sync-aur.sh pushes nothing when the AUR already matches and never downgrades it.
       - name: Push to AUR
-        if: steps.check.outputs.update == 'true' || inputs.force_sync == true
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
-          # Configure SSH for AUR
+          # Configure SSH for AUR, trusting only its pinned host keys
           mkdir -p /root/.ssh
           echo "$AUR_SSH_KEY" > /root/.ssh/aur
           chmod 600 /root/.ssh/aur
-          ssh-keyscan aur.archlinux.org >> /root/.ssh/known_hosts 2>/dev/null
+          install -m 644 .github/aur_known_hosts /root/.ssh/known_hosts
           cat > /root/.ssh/config << EOF
           Host aur.archlinux.org
             IdentityFile /root/.ssh/aur
@@ -96,15 +105,4 @@ jobs:
           git config --global user.name "David Williams"
           git config --global user.email "davewil1973@gmail.com"
 
-          # Clone AUR repo, update files, and push back
-          # AUR repos must be flat (no subdirectories)
-          git clone ssh://aur@aur.archlinux.org/tidewave-bin.git /tmp/aur
-          cp PKGBUILD .SRCINFO /tmp/aur/
-          cd /tmp/aur
-          git add PKGBUILD .SRCINFO
-          if git diff --cached --quiet; then
-            echo "AUR already up to date"
-          else
-            git commit -m "Update tidewave-bin to $(grep '^pkgver=' PKGBUILD | cut -d= -f2)"
-            git push
-          fi
+          sh scripts/sync-aur.sh ssh://aur@aur.archlinux.org/tidewave-bin.git
